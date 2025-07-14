@@ -24,6 +24,10 @@ app.use(cors({
 // Logging middleware
 app.use(morgan('combined'))
 
+// Webhook endpoint with raw body parsing (MUST be before express.json())
+import webhookRoutes from './routes/webhooks.js'
+app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes)
+
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
@@ -45,7 +49,8 @@ app.get('/api/health', (req, res) => {
     message: 'Prometheus CRM API is running',
     timestamp: new Date().toISOString(),
     version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    webhook_url: `${req.protocol}://${req.get('host')}/api/webhooks/stripe`
   })
 })
 
