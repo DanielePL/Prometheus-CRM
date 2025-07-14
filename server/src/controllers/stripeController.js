@@ -18,7 +18,45 @@ const getStripe = () => {
   return stripe
 }
 
-// Subscription plans mapping
+// Function to get or create price for a plan
+const getOrCreatePrice = async (planId) => {
+  const planDetails = {
+    'rev1_tier1': { amount: 900, name: 'REV1 Basic' },
+    'rev1_tier2': { amount: 1900, name: 'REV1 Standard' },
+    'rev1_tier3': { amount: 2900, name: 'REV1 Premium' },
+    'rev2_coaching': { amount: 19900, name: 'REV2 Coaching' },
+    'rev3_enterprise': { amount: 49900, name: 'REV3 Enterprise' }
+  }
+
+  const plan = planDetails[planId]
+  if (!plan) {
+    throw new Error(`Invalid plan ID: ${planId}`)
+  }
+
+  try {
+    // Create a new price each time for testing
+    const price = await getStripe().prices.create({
+      unit_amount: plan.amount,
+      currency: 'usd',
+      recurring: {
+        interval: 'month'
+      },
+      product_data: {
+        name: plan.name,
+        metadata: {
+          plan_id: planId
+        }
+      }
+    })
+    
+    return price.id
+  } catch (error) {
+    console.error(`Error creating price for ${planId}:`, error)
+    throw error
+  }
+}
+
+// Legacy subscription plans mapping (for backwards compatibility)
 const planPrices = {
   'rev1_tier1': 'price_1dummy_tier1',
   'rev1_tier2': 'price_1dummy_tier2', 
@@ -94,24 +132,36 @@ const stripeController = {
         })
       }
 
-      // Create or retrieve Stripe customer
+      // Get the payment method to check if it's already attached to a customer
+      const paymentMethod = await getStripe().paymentMethods.retrieve(paymentMethodId)
+      
       let stripeCustomer
-      try {
-        stripeCustomer = await getStripe().customers.create({
-          metadata: { customerId }
-        })
-      } catch (error) {
-        console.error('Error creating Stripe customer:', error)
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to create customer'
-        })
+      
+      if (paymentMethod.customer) {
+        // Payment method is already attached to a customer, use that customer
+        stripeCustomer = await getStripe().customers.retrieve(paymentMethod.customer)
+        console.log('Using existing customer:', stripeCustomer.id)
+      } else {
+        // Create new customer and attach payment method
+        try {
+          stripeCustomer = await getStripe().customers.create({
+            metadata: { customerId }
+          })
+          
+          // Attach payment method to customer
+          await getStripe().paymentMethods.attach(paymentMethodId, {
+            customer: stripeCustomer.id
+          })
+          
+          console.log('Created new customer:', stripeCustomer.id)
+        } catch (error) {
+          console.error('Error creating Stripe customer:', error)
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to create customer'
+          })
+        }
       }
-
-      // Attach payment method to customer
-      await getStripe().paymentMethods.attach(paymentMethodId, {
-        customer: stripeCustomer.id
-      })
 
       // Set as default payment method
       await getStripe().customers.update(stripeCustomer.id, {
@@ -120,14 +170,9 @@ const stripeController = {
         }
       })
 
-      // Get price ID for plan
-      const priceId = planPrices[planId]
-      if (!priceId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid plan ID'
-        })
-      }
+      // Get or create price ID for plan
+      const priceId = await getOrCreatePrice(planId)
+      console.log('Using price ID:', priceId)
 
       // Create subscription
       const subscription = await getStripe().subscriptions.create({
